@@ -1,12 +1,11 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.core.cache import cache
 from app.api.v1 import api_router
 from app.db.session import engine, get_pool_status
-from app.db.base import Base
+from sqlalchemy import text
 import logging
 
 # Configure logging
@@ -15,14 +14,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-origins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:3001",
-]
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,7 +47,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -88,12 +79,18 @@ def detailed_health_check():
     """Detailed health check with service status"""
     redis_status = "healthy" if cache.is_available() else "unavailable"
     db_pool = get_pool_status()
+    database_status = "healthy"
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        database_status = "unavailable"
 
     return {
         "status": "healthy",
         "services": {
             "database": {
-                "status": "healthy",
+                "status": database_status,
                 "pool": db_pool
             },
             "redis": {

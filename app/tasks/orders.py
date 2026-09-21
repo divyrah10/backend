@@ -4,8 +4,8 @@ from app.core.cache import CacheInvalidator
 from app.db.session import SessionLocal
 from app.models.cart import CartItem
 from app.models.order import Order
+from app.models.product import Product
 from app.tasks.email import send_order_confirmation, send_shipping_notification
-from app.tasks.inventory import bulk_update_stock
 import logging
 
 logger = logging.getLogger(__name__)
@@ -26,17 +26,6 @@ def process_order_confirmation(order_id: str):
             order_id=str(order.id),
             email=order.user.email
         )
-
-        # Update stock for ordered items
-        stock_updates = []
-        for item in order.items:
-            stock_updates.append({
-                "product_id": str(item.product_id),
-                "quantity_change": -item.quantity
-            })
-
-        if stock_updates:
-            bulk_update_stock.delay(stock_updates)
 
         # Clear user's cart
         db.query(CartItem).filter(CartItem.user_id == order.user_id).delete()
@@ -75,6 +64,38 @@ def cleanup_abandoned_carts():
 
 
 @celery_app.task
+def release_expired_orders(max_age_minutes: int = 30):
+    """Cancel unpaid orders and safely return their reserved inventory."""
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+        orders = db.query(Order).filter(
+            Order.status == "pending",
+            Order.stock_reserved == "yes",
+            Order.created_at < cutoff,
+        ).with_for_update().all()
+
+        released = 0
+        for order in orders:
+            product_ids = [item.product_id for item in order.items]
+            products = db.query(Product).filter(Product.id.in_(product_ids)).order_by(Product.id).with_for_update().all()
+            product_map = {str(product.id): product for product in products}
+            for item in order.items:
+                product = product_map.get(str(item.product_id))
+                if product:
+                    product.stock_quantity += item.quantity
+                    CacheInvalidator.invalidate_product(str(product.id), product.slug)
+            order.stock_reserved = "restored"
+            order.status = "cancelled"
+            released += 1
+
+        db.commit()
+        return {"released_orders": released}
+    finally:
+        db.close()
+
+
+@celery_app.task
 def process_order_shipment(order_id: str, tracking_number: str):
     """Process order shipment and send notification"""
     db = SessionLocal()
@@ -86,7 +107,6 @@ def process_order_shipment(order_id: str, tracking_number: str):
 
         # Update order status
         order.status = "shipped"
-        order.tracking_number = tracking_number
         db.commit()
 
         # Send shipping notification
@@ -115,10 +135,10 @@ def generate_daily_sales_report():
         orders = db.query(Order).filter(
             Order.created_at >= yesterday,
             Order.created_at < today,
-            Order.payment_status == "paid"
+            Order.status.in_(["confirmed", "processing", "shipped", "delivered"])
         ).all()
 
-        total_revenue = sum(order.total_amount for order in orders)
+        total_revenue = sum(order.total for order in orders)
         total_orders = len(orders)
         total_items = sum(len(order.items) for order in orders)
 

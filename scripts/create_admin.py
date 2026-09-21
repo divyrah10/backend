@@ -4,6 +4,7 @@ Run with: python scripts/create_admin.py
 """
 import sys
 import os
+import getpass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -15,6 +16,17 @@ from app.core.permissions import RoleName
 
 
 def create_admin():
+    email = input("Admin email: ").strip().lower()
+    full_name = input("Admin full name: ").strip()
+    password = getpass.getpass("Admin password (12+ characters): ")
+    confirmation = getpass.getpass("Confirm password: ")
+    if not email or "@" not in email or not full_name:
+        print("Error: a valid email and full name are required.")
+        return
+    if len(password) < 12 or password != confirmation:
+        print("Error: passwords must match and contain at least 12 characters.")
+        return
+
     db = SessionLocal()
 
     try:
@@ -26,16 +38,16 @@ def create_admin():
             return
 
         # Check if admin already exists
-        existing = db.query(User).filter(User.email == "admin@loremipsum.com").first()
+        existing = db.query(User).filter(User.email == email).first()
         if existing:
             print("Admin user already exists.")
             return
 
         # Create admin user
         admin_user = User(
-            email="admin@loremipsum.com",
-            hashed_password=get_password_hash("admin123"),
-            full_name="Admin User",
+            email=email,
+            hashed_password=get_password_hash(password),
+            full_name=full_name,
             is_active=True,
             is_verified=True,
             role_id=admin_role.id,
@@ -45,9 +57,7 @@ def create_admin():
         db.commit()
 
         print("Admin user created successfully!")
-        print("Email: admin@loremipsum.com")
-        print("Password: admin123")
-        print("\nPlease change the password after first login.")
+        print(f"Email: {email}")
 
     except Exception as e:
         print(f"Error: {e}")

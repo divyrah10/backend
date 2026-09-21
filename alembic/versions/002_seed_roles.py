@@ -7,9 +7,8 @@ Create Date: 2024-01-01
 """
 from typing import Sequence, Union
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 import uuid
+import json
 
 revision: str = '002'
 down_revision: Union[str, None] = '001'
@@ -18,7 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 ROLES = [
     {
-        'id': str(uuid.uuid4()),
+        'id': str(uuid.uuid5(uuid.NAMESPACE_URL, 'notjustdark:role:super_admin')),
         'name': 'super_admin',
         'description': 'Full system access',
         'permissions': [
@@ -28,7 +27,7 @@ ROLES = [
         ]
     },
     {
-        'id': str(uuid.uuid4()),
+        'id': str(uuid.uuid5(uuid.NAMESPACE_URL, 'notjustdark:role:store_manager')),
         'name': 'store_manager',
         'description': 'Store management access',
         'permissions': [
@@ -37,7 +36,7 @@ ROLES = [
         ]
     },
     {
-        'id': str(uuid.uuid4()),
+        'id': str(uuid.uuid5(uuid.NAMESPACE_URL, 'notjustdark:role:customer_service')),
         'name': 'customer_service',
         'description': 'Customer support access',
         'permissions': [
@@ -45,7 +44,7 @@ ROLES = [
         ]
     },
     {
-        'id': str(uuid.uuid4()),
+        'id': str(uuid.uuid5(uuid.NAMESPACE_URL, 'notjustdark:role:customer')),
         'name': 'customer',
         'description': 'Regular customer',
         'permissions': [
@@ -56,21 +55,12 @@ ROLES = [
 
 
 def upgrade() -> None:
-    roles_table = sa.table('roles',
-        sa.column('id', postgresql.UUID),
-        sa.column('name', sa.String),
-        sa.column('description', sa.Text),
-        sa.column('permissions', postgresql.JSONB)
-    )
-
     for role in ROLES:
+        permissions = json.dumps(role['permissions']).replace("'", "''")
         op.execute(
-            roles_table.insert().values(
-                id=role['id'],
-                name=role['name'],
-                description=role['description'],
-                permissions=role['permissions']
-            )
+            "INSERT INTO roles (id, name, description, permissions) "
+            f"VALUES ('{role['id']}'::uuid, '{role['name']}', "
+            f"'{role['description']}', '{permissions}'::jsonb)"
         )
 
 

@@ -109,7 +109,8 @@ def create_order(
     # EDGE CASE 1: Double-submit prevention with idempotency key
     if order_data.idempotency_key:
         existing_order = db.query(Order).filter(
-            Order.idempotency_key == order_data.idempotency_key
+            Order.idempotency_key == order_data.idempotency_key,
+            Order.user_id == current_user.id,
         ).first()
         if existing_order:
             # Return existing order instead of creating duplicate
@@ -135,8 +136,6 @@ def create_order(
     product_ids = [item.product_id for item in order_data.items]
 
     # EDGE CASE 2: Deadlock prevention - always lock in consistent order
-    sorted_product_ids = sorted([str(pid) for pid in product_ids])
-
     # EDGE CASE 3: Race condition prevention with SELECT FOR UPDATE
     # This prevents two users from buying the last item simultaneously
     products = db.query(Product).filter(
@@ -341,6 +340,17 @@ def update_order_status(
     valid_statuses = [s.value for s in OrderStatus]
     if status_update.status not in valid_statuses:
         raise HTTPException(status_code=400, detail="Invalid status")
+
+    if status_update.status == OrderStatus.CANCELLED.value and order.stock_reserved == "yes":
+        product_ids = [item.product_id for item in order.items]
+        products = db.query(Product).filter(Product.id.in_(product_ids)).order_by(Product.id).with_for_update().all()
+        product_map = {str(product.id): product for product in products}
+        for item in order.items:
+            product = product_map.get(str(item.product_id))
+            if product:
+                product.stock_quantity += item.quantity
+                CacheInvalidator.invalidate_product(str(product.id), product.slug)
+        order.stock_reserved = "restored"
 
     order.status = status_update.status
     if status_update.admin_notes:

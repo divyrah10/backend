@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from sqlalchemy.orm import Session
 from uuid import UUID
 import razorpay
 import hmac
 import hashlib
+import json
 from app.db.session import get_db
 from app.api.deps import get_current_active_user
 from app.core.config import settings
@@ -117,6 +118,10 @@ def verify_payment(
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
 
+    order = db.query(Order).filter(Order.payment_id == payment.id).first()
+    if not order or order.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
     # Verify signature
     message = f"{verification_data.razorpay_order_id}|{verification_data.razorpay_payment_id}"
     expected_signature = hmac.new(
@@ -125,7 +130,7 @@ def verify_payment(
         hashlib.sha256
     ).hexdigest()
 
-    if expected_signature != verification_data.razorpay_signature:
+    if not hmac.compare_digest(expected_signature, verification_data.razorpay_signature):
         payment.status = "failed"
         payment.error_description = "Invalid signature"
         db.commit()
@@ -144,9 +149,7 @@ def verify_payment(
         pass
 
     # Update order status
-    order = db.query(Order).filter(Order.payment_id == payment.id).first()
-    if order:
-        order.status = OrderStatus.CONFIRMED.value
+    order.status = OrderStatus.CONFIRMED.value
 
     db.commit()
     db.refresh(payment)
@@ -173,7 +176,11 @@ def get_payment(
 
 
 @router.post("/webhook")
-async def razorpay_webhook(payload: dict, db: Session = Depends(get_db)):
+async def razorpay_webhook(
+    request: Request,
+    x_razorpay_signature: str = Header(...),
+    db: Session = Depends(get_db),
+):
     """
     Handle Razorpay webhooks for async payment updates.
 
@@ -181,6 +188,21 @@ async def razorpay_webhook(payload: dict, db: Session = Depends(get_db)):
     1. Payment success: Confirm order
     2. Payment failure: Restore stock so others can buy
     """
+    if not settings.RAZORPAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Payment webhook is not configured")
+
+    raw_payload = await request.body()
+    expected_signature = hmac.new(
+        settings.RAZORPAY_WEBHOOK_SECRET.encode(), raw_payload, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected_signature, x_razorpay_signature):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
+
     event = payload.get("event")
 
     if event == "payment.captured":

@@ -46,6 +46,7 @@ def build_cart_response(cart_items: list, db: Session) -> CartResponse:
             id=item.id,
             product_id=product.id,
             product_name=product.name,
+            product_slug=product.slug,
             product_image=product.images[0] if product.images else None,
             product_price=product.price,
             quantity=item.quantity,

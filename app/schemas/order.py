@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from decimal import Decimal
@@ -7,12 +7,12 @@ from datetime import datetime
 
 class OrderItemCreate(BaseModel):
     product_id: UUID
-    quantity: int
-    attributes: Dict[str, Any] = {}
+    quantity: int = Field(ge=1)
+    attributes: Dict[str, Any] = Field(default_factory=dict)
 
 
 class OrderCreate(BaseModel):
-    items: List[OrderItemCreate]
+    items: List[OrderItemCreate] = Field(min_length=1)
     shipping_address_id: UUID
     billing_address_id: Optional[UUID] = None
     customer_notes: Optional[str] = None

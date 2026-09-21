@@ -7,7 +7,6 @@ from datetime import datetime
 
 class PaymentCreate(BaseModel):
     order_id: UUID
-    amount: Decimal
     currency: str = "INR"
 
 

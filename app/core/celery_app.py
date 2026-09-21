@@ -50,6 +50,10 @@ celery_app.conf.update(
             "task": "app.tasks.orders.cleanup_abandoned_carts",
             "schedule": 86400.0,  # Every 24 hours
         },
+        "release-expired-orders": {
+            "task": "app.tasks.orders.release_expired_orders",
+            "schedule": 300.0,
+        },
         "sync-inventory-cache": {
             "task": "app.tasks.inventory.sync_inventory_cache",
             "schedule": 300.0,  # Every 5 minutes

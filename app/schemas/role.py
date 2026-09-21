@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from uuid import UUID
 
@@ -6,7 +6,7 @@ from uuid import UUID
 class RoleCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    permissions: List[str] = []
+    permissions: List[str] = Field(default_factory=list)
 
 
 class RoleResponse(BaseModel):

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from uuid import UUID
 
@@ -38,7 +38,7 @@ class CategoryResponse(BaseModel):
 
 
 class CategoryWithChildren(CategoryResponse):
-    subcategories: List["CategoryWithChildren"] = []
+    subcategories: List["CategoryWithChildren"] = Field(default_factory=list)
 
 
 CategoryWithChildren.model_rebuild()

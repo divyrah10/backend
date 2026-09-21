@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from decimal import Decimal
@@ -18,8 +18,8 @@ class ProductCreate(BaseModel):
     low_stock_threshold: int = 5
     category_id: Optional[UUID] = None
     vendor_id: Optional[UUID] = None
-    images: List[str] = []
-    attributes: Dict[str, Any] = {}
+    images: List[str] = Field(default_factory=list)
+    attributes: Dict[str, Any] = Field(default_factory=dict)
     is_active: bool = True
     is_featured: bool = False
     meta_title: Optional[str] = None

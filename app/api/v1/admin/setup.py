@@ -137,6 +137,11 @@ def initialize_admin(
 
     # Verify setup key
     expected_key = getattr(settings, 'ADMIN_SETUP_KEY', 'notjustdark-setup-2024')
+    if expected_key == 'notjustdark-setup-2024' or len(expected_key) < 24:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin setup is disabled until a secure ADMIN_SETUP_KEY is configured"
+        )
     if setup_data.setup_key != expected_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

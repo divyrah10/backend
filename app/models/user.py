@@ -10,11 +10,11 @@ class User(Base, TimestampMixin):
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    auth_id = Column(String(128), unique=True, nullable=True, index=True)  # BetterAuth user ID (nullable for admin users)
+    auth_id = Column(String(128), unique=True, nullable=True, index=True)  # Optional external identity ID
     email = Column(String(255), unique=True, nullable=False, index=True)
     full_name = Column(String(255), nullable=False)
     phone = Column(String(20), nullable=True)
-    hashed_password = Column(String(255), nullable=True)  # For admin users (customers use BetterAuth)
+    hashed_password = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
     role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id"), nullable=False)

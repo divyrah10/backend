@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
+    # Email
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "hello@notjustdark.com"
+    SMTP_USE_TLS: bool = True
+
     # Admin Setup
     ADMIN_SETUP_KEY: str = "notjustdark-setup-2024"  # Change this in production!
 
@@ -46,6 +54,7 @@ class Settings(BaseSettings):
     # Razorpay
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
 
     # CORS
     CORS_ORIGINS: str = '["http://localhost:3000"]'
