@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-from typing import List
+from sqlalchemy.orm import joinedload
 from uuid import UUID
 from decimal import Decimal
 import secrets
@@ -11,17 +10,39 @@ from app.db.session import get_db
 from app.api.deps import get_current_active_user, require_permission
 from app.core.permissions import Permission
 from app.core.cache import CacheInvalidator
-from app.models.order import Order, OrderItem, OrderStatus
+from app.models.order import Order, OrderItem, OrderStatus, Shipment, TrackingEvent
 from app.models.product import Product
 from app.models.address import Address
 from app.models.cart import CartItem
 from app.models.user import User
-from app.schemas.order import OrderCreate, OrderResponse, OrderListResponse, OrderStatusUpdate
+from app.schemas.order import (
+    OrderCreate,
+    OrderResponse,
+    OrderListResponse,
+    OrderStatusUpdate,
+    PublicTrackingResponse,
+    ShipmentResponse,
+    ShipmentUpdate,
+)
 
 router = APIRouter()
 
 TAX_RATE = Decimal("0.18")
 SHIPPING_COST = Decimal("0")  # Free shipping
+SHIPMENT_STATUSES = {
+    "order_confirmed",
+    "processing",
+    "ready_to_ship",
+    "picked_up",
+    "in_transit",
+    "out_for_delivery",
+    "delivered",
+    "delivery_delayed",
+    "ndr",
+    "rto_in_transit",
+    "rto_delivered",
+    "cancelled",
+}
 
 
 def generate_order_number() -> str:
@@ -44,6 +65,23 @@ def address_to_dict(address: Address) -> dict:
     }
 
 
+def get_or_create_shipment(db: Session, order: Order) -> Shipment:
+    if order.shipment:
+        return order.shipment
+
+    shipment = Shipment(order_id=order.id)
+    db.add(shipment)
+    db.flush()
+    db.add(TrackingEvent(
+        shipment_id=shipment.id,
+        status="order_confirmed",
+        title="Order confirmed",
+        description="We received your order and are preparing it for dispatch.",
+        occurred_at=order.created_at or datetime.utcnow(),
+    ))
+    return shipment
+
+
 @router.get("/", response_model=OrderListResponse)
 def list_orders(
     page: int = Query(1, ge=1),
@@ -52,7 +90,9 @@ def list_orders(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Order).filter(Order.user_id == current_user.id)
+    query = db.query(Order).options(
+        joinedload(Order.shipment).joinedload(Shipment.events)
+    ).filter(Order.user_id == current_user.id)
 
     if status:
         query = query.filter(Order.status == status)
@@ -70,13 +110,102 @@ def list_orders(
     )
 
 
+# Static routes must be declared before /{order_id}; otherwise "admin" and
+# "track" are treated as UUID values by Starlette's first-match routing.
+@router.get("/admin/all", response_model=OrderListResponse)
+def list_all_orders(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: str = None,
+    current_user: User = Depends(require_permission(Permission.MANAGE_ALL_ORDERS)),
+    db: Session = Depends(get_db)
+):
+    query = db.query(Order).options(
+        joinedload(Order.shipment).joinedload(Shipment.events)
+    )
+
+    if status:
+        query = query.filter(Order.status == status)
+
+    total = query.count()
+    offset = (page - 1) * page_size
+    orders = query.order_by(Order.created_at.desc()).offset(offset).limit(page_size).all()
+    return OrderListResponse(items=orders, total=total, page=page, page_size=page_size)
+
+
+@router.get("/track/{tracking_token}", response_model=PublicTrackingResponse)
+def get_public_tracking(tracking_token: str, db: Session = Depends(get_db)):
+    shipment = db.query(Shipment).options(
+        joinedload(Shipment.events), joinedload(Shipment.order).joinedload(Order.items)
+    ).filter(Shipment.tracking_token == tracking_token).first()
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Tracking link not found")
+
+    order = shipment.order
+    return PublicTrackingResponse(
+        order_number=order.order_number,
+        order_status=order.status,
+        destination_city=order.shipping_address.get("city"),
+        item_count=sum(item.quantity for item in order.items),
+        shipment=ShipmentResponse.model_validate(shipment),
+    )
+
+
+@router.put("/admin/{order_id}/shipment", response_model=OrderResponse)
+def update_shipment(
+    order_id: UUID,
+    shipment_update: ShipmentUpdate,
+    current_user: User = Depends(require_permission(Permission.MANAGE_ALL_ORDERS)),
+    db: Session = Depends(get_db),
+):
+    order = db.query(Order).options(joinedload(Order.shipment)).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if shipment_update.status and shipment_update.status not in SHIPMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid shipment status")
+
+    shipment = get_or_create_shipment(db, order)
+    for field in (
+        "provider", "provider_shipment_id", "awb_code", "courier_name",
+        "status", "tracking_url", "estimated_delivery",
+    ):
+        value = getattr(shipment_update, field)
+        if value is not None:
+            setattr(shipment, field, value)
+
+    if shipment_update.status:
+        shipment.last_synced_at = datetime.utcnow()
+        if shipment_update.status in {"picked_up", "in_transit", "out_for_delivery"}:
+            order.status = OrderStatus.SHIPPED.value
+        elif shipment_update.status == "delivered":
+            order.status = OrderStatus.DELIVERED.value
+
+    if shipment_update.event_title:
+        db.add(TrackingEvent(
+            shipment_id=shipment.id,
+            status=shipment_update.status or shipment.status,
+            title=shipment_update.event_title,
+            description=shipment_update.event_description,
+            location=shipment_update.event_location,
+            occurred_at=shipment_update.occurred_at or datetime.utcnow(),
+        ))
+
+    db.commit()
+    return db.query(Order).options(
+        joinedload(Order.shipment).joinedload(Shipment.events)
+    ).filter(Order.id == order.id).first()
+
+
 @router.get("/{order_id}", response_model=OrderResponse)
 def get_order(
     order_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    order = db.query(Order).filter(Order.id == order_id).first()
+    order = db.query(Order).options(
+        joinedload(Order.shipment).joinedload(Shipment.events)
+    ).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -115,6 +244,12 @@ def create_order(
         if existing_order:
             # Return existing order instead of creating duplicate
             return existing_order
+
+    if not order_data.payment_consent:
+        raise HTTPException(
+            status_code=400,
+            detail="Payment consent is required before an order can be created",
+        )
 
     # Get shipping address
     shipping_address = db.query(Address).filter(
@@ -209,11 +344,24 @@ def create_order(
         total=total,
         shipping_address=address_to_dict(shipping_address),
         billing_address=address_to_dict(billing_address) if billing_address else None,
-        customer_notes=order_data.customer_notes
+        customer_notes=order_data.customer_notes,
+        payment_consent_at=datetime.utcnow(),
+        payment_consent_version=order_data.payment_consent_version or "razorpay_checkout_v1",
     )
 
     db.add(order)
     db.flush()  # Get order ID
+
+    shipment = Shipment(order_id=order.id)
+    db.add(shipment)
+    db.flush()
+    db.add(TrackingEvent(
+        shipment_id=shipment.id,
+        status="order_confirmed",
+        title="Order confirmed",
+        description="We received your order and are preparing it for dispatch.",
+        occurred_at=datetime.utcnow(),
+    ))
 
     # Link items to order
     for item in order_items:
@@ -292,37 +440,20 @@ def cancel_order(
                 CacheInvalidator.invalidate_product(str(product_id), product.slug)
 
     order.status = OrderStatus.CANCELLED.value
+    shipment = get_or_create_shipment(db, order)
+    shipment.status = "cancelled"
+    shipment.last_synced_at = datetime.utcnow()
+    db.add(TrackingEvent(
+        shipment_id=shipment.id,
+        status="cancelled",
+        title="Order cancelled",
+        description="This order was cancelled before dispatch.",
+        occurred_at=datetime.utcnow(),
+    ))
     db.commit()
     db.refresh(order)
 
     return order
-
-
-# Admin endpoints
-@router.get("/admin/all", response_model=OrderListResponse)
-def list_all_orders(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    status: str = None,
-    current_user: User = Depends(require_permission(Permission.MANAGE_ALL_ORDERS)),
-    db: Session = Depends(get_db)
-):
-    query = db.query(Order)
-
-    if status:
-        query = query.filter(Order.status == status)
-
-    total = query.count()
-    offset = (page - 1) * page_size
-
-    orders = query.order_by(Order.created_at.desc()).offset(offset).limit(page_size).all()
-
-    return OrderListResponse(
-        items=orders,
-        total=total,
-        page=page,
-        page_size=page_size
-    )
 
 
 @router.put("/{order_id}/status", response_model=OrderResponse)
@@ -341,6 +472,8 @@ def update_order_status(
     if status_update.status not in valid_statuses:
         raise HTTPException(status_code=400, detail="Invalid status")
 
+    previous_status = order.status
+
     if status_update.status == OrderStatus.CANCELLED.value and order.stock_reserved == "yes":
         product_ids = [item.product_id for item in order.items]
         products = db.query(Product).filter(Product.id.in_(product_ids)).order_by(Product.id).with_for_update().all()
@@ -355,6 +488,26 @@ def update_order_status(
     order.status = status_update.status
     if status_update.admin_notes:
         order.admin_notes = status_update.admin_notes
+
+    shipment_status_map = {
+        OrderStatus.CONFIRMED.value: ("order_confirmed", "Order confirmed"),
+        OrderStatus.PROCESSING.value: ("processing", "Preparing your order"),
+        OrderStatus.SHIPPED.value: ("in_transit", "Order dispatched"),
+        OrderStatus.DELIVERED.value: ("delivered", "Order delivered"),
+        OrderStatus.CANCELLED.value: ("cancelled", "Order cancelled"),
+    }
+    if previous_status != status_update.status and status_update.status in shipment_status_map:
+        shipment_status, title = shipment_status_map[status_update.status]
+        shipment = get_or_create_shipment(db, order)
+        shipment.status = shipment_status
+        shipment.last_synced_at = datetime.utcnow()
+        db.add(TrackingEvent(
+            shipment_id=shipment.id,
+            status=shipment_status,
+            title=title,
+            description=status_update.admin_notes,
+            occurred_at=datetime.utcnow(),
+        ))
 
     db.commit()
     db.refresh(order)

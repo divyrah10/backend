@@ -1,5 +1,6 @@
+import secrets
 import uuid
-from sqlalchemy import Column, String, Text, Integer, Numeric, ForeignKey, Enum
+from sqlalchemy import Column, String, Text, Integer, Numeric, ForeignKey, DateTime
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.db.base import Base, TimestampMixin
@@ -39,6 +40,8 @@ class Order(Base, TimestampMixin):
 
     # Payment
     payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id"), nullable=True)
+    payment_consent_at = Column(DateTime, nullable=True)
+    payment_consent_version = Column(String(50), nullable=True)
 
     # Notes
     customer_notes = Column(Text, nullable=True)
@@ -48,6 +51,12 @@ class Order(Base, TimestampMixin):
     user = relationship("User", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     payment = relationship("Payment", back_populates="order")
+    shipment = relationship(
+        "Shipment",
+        back_populates="order",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self):
         return f"<Order {self.order_number}>"
@@ -71,3 +80,43 @@ class OrderItem(Base, TimestampMixin):
 
     def __repr__(self):
         return f"<OrderItem {self.product_name} x{self.quantity}>"
+
+
+class Shipment(Base, TimestampMixin):
+    """Provider-neutral shipment data for one customer order."""
+
+    __tablename__ = "shipments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id"), unique=True, nullable=False, index=True)
+    tracking_token = Column(String(64), unique=True, nullable=False, index=True, default=lambda: secrets.token_urlsafe(32))
+    provider = Column(String(30), default="shiprocket", nullable=False)
+    provider_shipment_id = Column(String(100), nullable=True, index=True)
+    awb_code = Column(String(100), nullable=True, index=True)
+    courier_name = Column(String(120), nullable=True)
+    status = Column(String(40), default="order_confirmed", nullable=False, index=True)
+    tracking_url = Column(String(500), nullable=True)
+    estimated_delivery = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+
+    order = relationship("Order", back_populates="shipment")
+    events = relationship(
+        "TrackingEvent",
+        back_populates="shipment",
+        cascade="all, delete-orphan",
+        order_by="TrackingEvent.occurred_at.desc()",
+    )
+
+
+class TrackingEvent(Base, TimestampMixin):
+    __tablename__ = "tracking_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id"), nullable=False, index=True)
+    status = Column(String(40), nullable=False, index=True)
+    title = Column(String(160), nullable=False)
+    description = Column(Text, nullable=True)
+    location = Column(String(200), nullable=True)
+    occurred_at = Column(DateTime, nullable=False)
+
+    shipment = relationship("Shipment", back_populates="events")

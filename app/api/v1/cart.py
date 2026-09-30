@@ -101,8 +101,16 @@ def add_to_cart(
             detail=f"Only {product.stock_quantity} items available"
         )
 
+    available_sizes = (product.attributes or {}).get("sizes", [])
+    selected_size = item_data.attributes.get("size")
+    if available_sizes and selected_size not in available_sizes:
+        raise HTTPException(status_code=400, detail="Please select an available size")
+
     # Check if item already in cart
-    query = db.query(CartItem).filter(CartItem.product_id == item_data.product_id)
+    query = db.query(CartItem).filter(
+        CartItem.product_id == item_data.product_id,
+        CartItem.attributes == item_data.attributes,
+    )
     if current_user:
         query = query.filter(CartItem.user_id == current_user.id)
     elif x_session_id:
@@ -121,7 +129,6 @@ def add_to_cart(
                 detail=f"Cannot add more. Only {product.stock_quantity} items available"
             )
         existing_item.quantity = new_quantity
-        existing_item.attributes = item_data.attributes
     else:
         # Create new cart item
         cart_item = CartItem(
@@ -235,7 +242,8 @@ def merge_guest_cart(
         # Check if user already has this product
         existing = db.query(CartItem).filter(
             CartItem.user_id == current_user.id,
-            CartItem.product_id == guest_item.product_id
+            CartItem.product_id == guest_item.product_id,
+            CartItem.attributes == guest_item.attributes,
         ).first()
 
         if existing:

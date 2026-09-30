@@ -9,6 +9,7 @@ from app.schemas.order import OrderCreate, OrderResponse, OrderItemResponse
 from app.schemas.address import AddressCreate, AddressUpdate, AddressResponse
 from app.schemas.payment import PaymentCreate, PaymentResponse, RazorpayOrderResponse
 from app.schemas.auth import Token, TokenPayload
+from app.schemas.early_access import EarlyAccessEventCreate, EarlyAccessLeadCreate, EarlyAccessTrackResponse
 
 __all__ = [
     "UserCreate", "UserUpdate", "UserResponse", "UserLogin",
@@ -22,4 +23,5 @@ __all__ = [
     "AddressCreate", "AddressUpdate", "AddressResponse",
     "PaymentCreate", "PaymentResponse", "RazorpayOrderResponse",
     "Token", "TokenPayload",
+    "EarlyAccessEventCreate", "EarlyAccessLeadCreate", "EarlyAccessTrackResponse",
 ]

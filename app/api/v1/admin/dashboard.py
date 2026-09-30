@@ -10,6 +10,7 @@ from app.models.order import Order, OrderStatus
 from app.models.product import Product
 from app.models.user import User
 from app.models.review import Review
+from app.models.early_access import EarlyAccessEvent, EarlyAccessLead
 
 router = APIRouter()
 
@@ -68,6 +69,14 @@ def get_dashboard_stats(
     # Pending reviews
     pending_reviews = db.query(func.count(Review.id)).filter(Review.is_approved == False).scalar()
 
+    early_access_views = db.query(func.count(EarlyAccessEvent.id)).filter(
+        EarlyAccessEvent.event_type == "page_view"
+    ).scalar()
+    early_access_entries = db.query(func.count(EarlyAccessEvent.id)).filter(
+        EarlyAccessEvent.event_type == "store_entered"
+    ).scalar()
+    early_access_leads = db.query(func.count(EarlyAccessLead.id)).scalar()
+
     return {
         "revenue": {
             "total": float(total_revenue),
@@ -87,6 +96,12 @@ def get_dashboard_stats(
         },
         "reviews": {
             "pending": pending_reviews
+        },
+        "early_access": {
+            "views": early_access_views,
+            "leads": early_access_leads,
+            "entries": early_access_entries,
+            "instagram_handle": "notjustdark"
         }
     }
 

@@ -21,6 +21,13 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             OrderItemCreate(product_id=uuid4(), quantity=0)
 
+    def test_order_payment_consent_defaults_to_false(self):
+        order = OrderCreate(
+            items=[OrderItemCreate(product_id=uuid4(), quantity=1)],
+            shipping_address_id=uuid4(),
+        )
+        self.assertFalse(order.payment_consent)
+
     def test_order_attributes_are_not_shared(self):
         first = OrderItemCreate(product_id=uuid4(), quantity=1)
         second = OrderItemCreate(product_id=uuid4(), quantity=1)

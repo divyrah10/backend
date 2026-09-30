@@ -49,6 +49,13 @@ def get_product_with_stats(product: Product, db: Session) -> dict:
     }
 
 
+def serialize_product(product: Product, db: Session) -> dict:
+    """Return a JSON-safe product payload suitable for both responses and Redis."""
+    return ProductResponse.model_validate(
+        get_product_with_stats(product, db)
+    ).model_dump(mode="json")
+
+
 @router.get("/", response_model=ProductListResponse)
 def list_products(
     page: int = Query(1, ge=1),
@@ -86,12 +93,19 @@ def list_products(
     query = db.query(Product).filter(Product.is_active == True)
 
     # Category filter
-    if category_id:
-        query = query.filter(Product.category_id == category_id)
-    elif category_slug:
-        category = db.query(Category).filter(Category.slug == category_slug).first()
+    if category_id or category_slug:
+        category_query = db.query(Category)
+        category = (
+            category_query.filter(Category.id == category_id).first()
+            if category_id
+            else category_query.filter(Category.slug == category_slug).first()
+        )
         if category:
-            query = query.filter(Product.category_id == category.id)
+            # Root collections such as Men and Women include their garment
+            # subcategories, while a subcategory filter remains exact.
+            category_ids = [category.id]
+            category_ids.extend(sub.id for sub in category.subcategories if sub.is_active)
+            query = query.filter(Product.category_id.in_(category_ids))
 
     # Search
     if search:
@@ -128,7 +142,7 @@ def list_products(
     products = query.options(joinedload(Product.category)).offset(offset).limit(page_size).all()
 
     # Add stats
-    items = [get_product_with_stats(p, db) for p in products]
+    items = [serialize_product(p, db) for p in products]
 
     result = ProductListResponse(
         items=items,
@@ -140,7 +154,7 @@ def list_products(
 
     # Cache the result (skip for search queries)
     if not search:
-        cache.set(cache_key, result.model_dump(), ttl=settings.CACHE_PRODUCT_TTL)
+        cache.set(cache_key, result.model_dump(mode="json"), ttl=settings.CACHE_PRODUCT_TTL)
 
     return result
 
@@ -158,7 +172,7 @@ def get_featured_products(limit: int = 8, db: Session = Depends(get_db)):
         Product.is_featured == True
     ).options(joinedload(Product.category)).limit(limit).all()
 
-    result = [get_product_with_stats(p, db) for p in products]
+    result = [serialize_product(p, db) for p in products]
 
     # Cache for longer since featured products don't change often
     cache.set(cache_key, result, ttl=settings.CACHE_PRODUCT_TTL)
@@ -181,7 +195,7 @@ def get_product(product_id: UUID, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    result = get_product_with_stats(product, db)
+    result = serialize_product(product, db)
     cache.set(cache_key, result, ttl=settings.CACHE_PRODUCT_TTL)
 
     return result
@@ -202,7 +216,7 @@ def get_product_by_slug(slug: str, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    result = get_product_with_stats(product, db)
+    result = serialize_product(product, db)
     cache.set(cache_key, result, ttl=settings.CACHE_PRODUCT_TTL)
 
     return result
@@ -327,15 +341,18 @@ async def upload_product_image(
     try:
         result = cloudinary.uploader.upload(
             file.file,
-            folder="products",
+            folder=f"not-just-dark/products/{product.slug}",
             resource_type="image",
+            overwrite=False,
+            tags=["not-just-dark", "product", product.slug],
+            context={"alt": product.name, "caption": product.name},
             transformation=[
                 {"width": 1200, "height": 1200, "crop": "limit"},
                 {"quality": "auto:best"},
                 {"fetch_format": "auto"}
             ]
         )
-        image_url = result["secure_url"]
+        image_url = result["secure_url"].replace("/upload/", "/upload/f_auto,q_auto/")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image upload failed: {str(e)}")
 
