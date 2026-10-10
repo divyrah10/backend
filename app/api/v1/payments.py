@@ -50,6 +50,35 @@ def restore_order_stock(order: Order, db: Session):
 razorpay_client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
 
+def order_for_payment(db: Session, payment: Payment, lock: bool = False):
+    """The order a payment belongs to.
+
+    Orders created before the payment_id flush fix were never linked, so fall back
+    to the order id we stored in the Razorpay order's notes, and repair the link.
+    """
+    query = db.query(Order)
+    if lock:
+        query = query.with_for_update()
+    order = query.filter(Order.payment_id == payment.id).first()
+    if order or not payment.razorpay_order_id:
+        return order
+
+    try:
+        notes = razorpay_client.order.fetch(payment.razorpay_order_id).get("notes") or {}
+    except Exception:
+        return None
+    order_id = notes.get("order_id")
+    if not order_id:
+        return None
+    query = db.query(Order)
+    if lock:
+        query = query.with_for_update()
+    order = query.filter(Order.id == order_id, Order.payment_id.is_(None)).first()
+    if order:
+        order.payment_id = payment.id
+    return order
+
+
 @router.post("/create-order", response_model=RazorpayOrderResponse)
 def create_payment_order(
     payment_data: PaymentCreate,
@@ -91,6 +120,7 @@ def create_payment_order(
         status="pending"
     )
     db.add(payment)
+    db.flush()  # payment.id is only assigned on flush; linking before it stored NULL
 
     # Link payment to order
     order.payment_id = payment.id
@@ -120,7 +150,7 @@ def verify_payment(
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
 
-    order = db.query(Order).filter(Order.payment_id == payment.id).first()
+    order = order_for_payment(db, payment)
     if not order or order.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -225,7 +255,7 @@ async def razorpay_webhook(
             payment.status = "completed"
             payment.method = payment_entity.get("method")
 
-            order = db.query(Order).filter(Order.payment_id == payment.id).first()
+            order = order_for_payment(db, payment)
             newly_confirmed = bool(order) and order.status == OrderStatus.PENDING.value
             if order:
                 order.status = OrderStatus.CONFIRMED.value
@@ -250,9 +280,7 @@ async def razorpay_webhook(
             payment.error_description = payment_entity.get("error_description")
 
             # EDGE CASE: Restore stock on payment failure
-            order = db.query(Order).filter(
-                Order.payment_id == payment.id
-            ).with_for_update().first()
+            order = order_for_payment(db, payment, lock=True)
 
             if order and order.status == OrderStatus.PENDING.value:
                 restore_order_stock(order, db)
