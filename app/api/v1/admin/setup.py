@@ -9,7 +9,7 @@ This module handles:
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
@@ -59,7 +59,12 @@ class InviteAdminRequest(BaseModel):
     email: EmailStr
     full_name: str
     role: str = "store_manager"  # super_admin, store_manager, customer_service
-    temporary_password: str
+    temporary_password: str = Field(min_length=12)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=12)
 
 
 class UpdateUserRoleRequest(BaseModel):
@@ -484,3 +489,19 @@ def activate_user(
         created_at=user.created_at,
         last_login=user.last_login
     )
+
+
+@router.put("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_own_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Replace the signed-in user's password, e.g. the temporary one from an invite."""
+    if not current_user.hashed_password or not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    if data.new_password == data.current_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a different password")
+
+    current_user.hashed_password = get_password_hash(data.new_password)
+    db.commit()
