@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Header
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Header
 from sqlalchemy.orm import Session
 from uuid import UUID
 import razorpay
@@ -14,6 +14,7 @@ from app.models.order import Order, OrderStatus
 from app.models.product import Product
 from app.models.user import User
 from app.schemas.payment import PaymentCreate, PaymentResponse, RazorpayOrderResponse, PaymentVerify
+from app.services.shiprocket import push_order_in_background
 
 router = APIRouter()
 
@@ -107,6 +108,7 @@ def create_payment_order(
 @router.post("/verify", response_model=PaymentResponse)
 def verify_payment(
     verification_data: PaymentVerify,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -149,10 +151,14 @@ def verify_payment(
         pass
 
     # Update order status
+    newly_confirmed = order.status == OrderStatus.PENDING.value
     order.status = OrderStatus.CONFIRMED.value
 
     db.commit()
     db.refresh(payment)
+
+    if newly_confirmed:
+        background_tasks.add_task(push_order_in_background, order.id)
 
     return payment
 
@@ -178,6 +184,7 @@ def get_payment(
 @router.post("/webhook")
 async def razorpay_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_razorpay_signature: str = Header(...),
     db: Session = Depends(get_db),
 ):
@@ -219,11 +226,15 @@ async def razorpay_webhook(
             payment.method = payment_entity.get("method")
 
             order = db.query(Order).filter(Order.payment_id == payment.id).first()
+            newly_confirmed = bool(order) and order.status == OrderStatus.PENDING.value
             if order:
                 order.status = OrderStatus.CONFIRMED.value
                 # Stock stays reserved - it's now sold
 
             db.commit()
+
+            if newly_confirmed:
+                background_tasks.add_task(push_order_in_background, order.id)
 
     elif event == "payment.failed":
         payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})

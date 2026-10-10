@@ -4,6 +4,7 @@ from typing import Optional
 from uuid import UUID
 from decimal import Decimal
 from app.db.session import get_db
+from app.core.pricing import included_gst
 from app.api.deps import get_current_user
 from app.models.cart import CartItem
 from app.models.product import Product
@@ -12,7 +13,6 @@ from app.schemas.cart import CartItemCreate, CartItemUpdate, CartItemResponse, C
 
 router = APIRouter()
 
-TAX_RATE = Decimal("0.18")  # 18% GST
 
 
 def get_cart_items(db: Session, user: Optional[User], session_id: Optional[str]):
@@ -54,8 +54,9 @@ def build_cart_response(cart_items: list, db: Session) -> CartResponse:
             subtotal=item_subtotal
         ))
 
-    tax = subtotal * TAX_RATE
-    total = subtotal + tax
+    # Prices already include GST; report the included share without adding it.
+    tax = included_gst(subtotal)
+    total = subtotal
 
     return CartResponse(
         items=items,

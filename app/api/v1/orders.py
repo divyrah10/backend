@@ -7,6 +7,7 @@ import secrets
 import string
 from datetime import datetime
 from app.db.session import get_db
+from app.core.pricing import included_gst
 from app.api.deps import get_current_active_user, require_permission
 from app.core.permissions import Permission
 from app.core.cache import CacheInvalidator
@@ -15,6 +16,7 @@ from app.models.product import Product
 from app.models.address import Address
 from app.models.cart import CartItem
 from app.models.user import User
+from app.services import shiprocket
 from app.schemas.order import (
     OrderCreate,
     OrderResponse,
@@ -27,7 +29,6 @@ from app.schemas.order import (
 
 router = APIRouter()
 
-TAX_RATE = Decimal("0.18")
 SHIPPING_COST = Decimal("0")  # Free shipping
 SHIPMENT_STATUSES = {
     "order_confirmed",
@@ -197,6 +198,42 @@ def update_shipment(
     ).filter(Order.id == order.id).first()
 
 
+@router.post("/admin/{order_id}/shipment/shiprocket", response_model=OrderResponse)
+def push_to_shiprocket(
+    order_id: UUID,
+    current_user: User = Depends(require_permission(Permission.MANAGE_ALL_ORDERS)),
+    db: Session = Depends(get_db),
+):
+    """Create (or finish creating) this order in Shiprocket. Safe to retry."""
+    order = shiprocket.load_order(db, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    try:
+        shiprocket.push_order(db, order)
+    except shiprocket.ShiprocketError as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc))
+    return shiprocket.load_order(db, order_id)
+
+
+@router.post("/admin/{order_id}/shipment/refresh", response_model=OrderResponse)
+def refresh_shipment_tracking(
+    order_id: UUID,
+    current_user: User = Depends(require_permission(Permission.MANAGE_ALL_ORDERS)),
+    db: Session = Depends(get_db),
+):
+    """Pull the latest courier scans from Shiprocket, for when a webhook was missed."""
+    order = shiprocket.load_order(db, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    try:
+        shiprocket.refresh_tracking(db, order)
+    except shiprocket.ShiprocketError as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc))
+    return shiprocket.load_order(db, order_id)
+
+
 @router.get("/{order_id}", response_model=OrderResponse)
 def get_order(
     order_id: UUID,
@@ -328,8 +365,9 @@ def create_order(
             detail=f"Insufficient stock: {'; '.join(stock_errors)}"
         )
 
-    tax = subtotal * TAX_RATE
-    total = subtotal + tax + SHIPPING_COST
+    # Prices already include GST; report the included share without adding it.
+    tax = included_gst(subtotal)
+    total = subtotal + SHIPPING_COST
 
     # Create order
     order = Order(

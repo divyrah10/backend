@@ -56,6 +56,25 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
 
+    # Shiprocket (use a dedicated API user from Settings > API in the Shiprocket panel)
+    SHIPROCKET_BASE_URL: str = "https://apiv2.shiprocket.in/v1/external"
+    SHIPROCKET_EMAIL: str = ""
+    SHIPROCKET_PASSWORD: str = ""
+    SHIPROCKET_PICKUP_LOCATION: str = "Primary"  # Pickup address nickname in Shiprocket
+    SHIPROCKET_WEBHOOK_TOKEN: str = ""  # Sent by Shiprocket as the x-api-key header
+    # Assigning an AWB and booking a pickup charge the Shiprocket wallet, so both are opt-in.
+    SHIPROCKET_AUTO_ASSIGN_AWB: bool = False
+    SHIPROCKET_AUTO_PICKUP: bool = False
+    # Products have no weight or size yet, so every parcel uses these.
+    SHIPROCKET_ITEM_WEIGHT_KG: float = 0.3
+    SHIPROCKET_PACKAGE_LENGTH_CM: float = 30
+    SHIPROCKET_PACKAGE_BREADTH_CM: float = 25
+    SHIPROCKET_PACKAGE_HEIGHT_CM: float = 4
+
+    @property
+    def shiprocket_enabled(self) -> bool:
+        return bool(self.SHIPROCKET_EMAIL and self.SHIPROCKET_PASSWORD)
+
     # CORS
     CORS_ORIGINS: str = '["http://localhost:3000"]'
 
