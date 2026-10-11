@@ -102,6 +102,16 @@ def normalize_phone(phone: Optional[str]) -> str:
     return digits[-10:]
 
 
+def first_mobile(*candidates: Optional[str]) -> str:
+    """First candidate that is really a 10-digit number. Old addresses allowed free text,
+    so a phone field can hold a name; that must fall through to the next source."""
+    for candidate in candidates:
+        phone = normalize_phone(candidate)
+        if len(phone) == 10:
+            return phone
+    return ""
+
+
 def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -146,7 +156,7 @@ def build_order_payload(order: Order, fallback_phone: Optional[str] = None) -> d
         "billing_state": address.get("state", ""),
         "billing_country": address.get("country") or "India",
         "billing_email": order.user.email,
-        "billing_phone": normalize_phone(address.get("phone") or order.user.phone or fallback_phone),
+        "billing_phone": first_mobile(address.get("phone"), order.user.phone, fallback_phone),
         "shipping_is_billing": True,
         "order_items": items,
         "payment_method": "Prepaid",
@@ -268,8 +278,7 @@ def load_order(db: Session, order_id) -> Optional[Order]:
 
 def payment_contact(order: Order) -> Optional[str]:
     """The phone the customer gave Razorpay at payment, for orders whose address has none."""
-    address_phone = (order.shipping_address or {}).get("phone")
-    if normalize_phone(address_phone or order.user.phone):
+    if first_mobile((order.shipping_address or {}).get("phone"), order.user.phone):
         return None
     payment = order.payment
     if not payment or not payment.razorpay_payment_id:

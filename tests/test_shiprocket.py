@@ -119,6 +119,13 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(build_order_payload(order)["billing_phone"], "")
         self.assertEqual(build_order_payload(order, fallback_phone="+91 9741 529588")["billing_phone"], "9741529588")
 
+    def test_name_typed_into_phone_falls_through_to_razorpay(self):
+        order = make_order()
+        order.shipping_address["phone"] = "Solanki "
+        self.assertEqual(build_order_payload(order, fallback_phone="+919741529588")["billing_phone"], "9741529588")
+        order.shipping_address["phone"] = "98765"  # too short to be a mobile
+        self.assertEqual(build_order_payload(order, fallback_phone="+919741529588")["billing_phone"], "9741529588")
+
     def test_address_phone_wins_over_fallback(self):
         payload = build_order_payload(make_order(), fallback_phone="+91 9999999999")
         self.assertEqual(payload["billing_phone"], "8217409487")
