@@ -199,6 +199,10 @@ class ShiprocketClient:
     def track_awb(self, awb: str) -> dict[str, Any]:
         return self._request("GET", f"/courier/track/awb/{awb}").get("tracking_data", {})
 
+    def track_shipment(self, shipment_id: str) -> dict[str, Any]:
+        """Tracking by Shiprocket shipment id; works before we know the AWB."""
+        return self._request("GET", f"/courier/track/shipment/{shipment_id}").get("tracking_data", {})
+
 
 def apply_status(order: Order, shipment: Shipment, status: str) -> None:
     """Set a shipment status and move the order along with it."""
@@ -310,11 +314,12 @@ def push_order_in_background(order_id) -> None:
         db.close()
 
 
-def apply_tracking_update(db: Session, payload: dict[str, Any]) -> Optional[Shipment]:
-    """Fold a Shiprocket webhook body into the matching shipment. Caller commits."""
+def apply_tracking_update(db: Session, payload: dict[str, Any], shipment: Optional[Shipment] = None) -> Optional[Shipment]:
+    """Fold a Shiprocket tracking payload into a shipment (found by AWB or order if not given). Caller commits."""
     awb = str(payload.get("awb") or "").strip()
     query = db.query(Shipment).options(joinedload(Shipment.events), joinedload(Shipment.order))
-    shipment = query.filter(Shipment.awb_code == awb).first() if awb else None
+    if not shipment and awb:
+        shipment = query.filter(Shipment.awb_code == awb).first()
     if not shipment and payload.get("order_id"):
         # Shiprocket's order_id is ours: we send order_number as the channel order id.
         shipment = query.join(Order).filter(Order.order_number == str(payload["order_id"])).first()
@@ -323,6 +328,10 @@ def apply_tracking_update(db: Session, payload: dict[str, Any]) -> Optional[Ship
 
     if awb and not shipment.awb_code:
         shipment.awb_code = awb
+        if shipment.status in {"order_confirmed", "processing"}:
+            apply_status(shipment.order, shipment, "ready_to_ship")
+            record_event(db, shipment, "ready_to_ship", STATUS_TITLES["ready_to_ship"], datetime.utcnow(),
+                         description=f"Handed to {payload['courier_name']}." if payload.get("courier_name") else None)
     if shipment.awb_code:
         shipment.tracking_url = TRACKING_URL.format(awb=shipment.awb_code)
     if payload.get("courier_name"):
@@ -350,19 +359,29 @@ def apply_tracking_update(db: Session, payload: dict[str, Any]) -> Optional[Ship
 
 
 def refresh_tracking(db: Session, order: Order, client: Optional[ShiprocketClient] = None) -> Shipment:
-    """Pull the latest tracking for an order's AWB and store it. Commits."""
-    shipment = order.shipment
-    if not shipment or not shipment.awb_code:
-        raise ShiprocketError("This order has no AWB yet")
+    """Pull the latest tracking from Shiprocket and store it. Commits.
 
-    data = (client or ShiprocketClient()).track_awb(shipment.awb_code)
-    track = (data.get("shipment_track") or [{}])[0]
+    Looks up by AWB when we have one, otherwise by Shiprocket shipment id, so the
+    AWB and courier assigned in the Shiprocket panel come back without a webhook.
+    """
+    shipment = order.shipment
+    if not shipment or not (shipment.awb_code or shipment.provider_shipment_id):
+        raise ShiprocketError("This order hasn't been sent to Shiprocket yet")
+
+    client = client or ShiprocketClient()
+    data = (client.track_awb(shipment.awb_code) if shipment.awb_code
+            else client.track_shipment(shipment.provider_shipment_id))
+    track = (data.get("shipment_track") or [{}])[0] or {}
+    awb = str(track.get("awb_code") or track.get("awb") or "").strip()
+    if not shipment.awb_code and not awb:
+        raise ShiprocketError("Shiprocket hasn't assigned a courier yet. Use Ship Now in Shiprocket, then refresh.")
+
     apply_tracking_update(db, {
-        "awb": shipment.awb_code,
-        "courier_name": track.get("courier_name"),
+        "awb": shipment.awb_code or awb,
+        "courier_name": track.get("courier_name") or track.get("courier_company_name"),
         "current_status": track.get("current_status"),
         "etd": track.get("edd") or data.get("etd"),
         "scans": data.get("shipment_track_activities") or [],
-    })
+    }, shipment=shipment)
     db.commit()
     return shipment
