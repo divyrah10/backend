@@ -5,6 +5,7 @@ from app.db.session import SessionLocal
 from app.models.cart import CartItem
 from app.models.order import Order
 from app.models.product import Product
+from app.services import inventory
 from app.tasks.email import send_order_confirmation, send_shipping_notification
 import logging
 
@@ -83,7 +84,7 @@ def release_expired_orders(max_age_minutes: int = 30):
             for item in order.items:
                 product = product_map.get(str(item.product_id))
                 if product:
-                    product.stock_quantity += item.quantity
+                    inventory.adjust(product, inventory.item_size(item.attributes), item.quantity)
                     CacheInvalidator.invalidate_product(str(product.id), product.slug)
             order.stock_reserved = "restored"
             order.status = "cancelled"

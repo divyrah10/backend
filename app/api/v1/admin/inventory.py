@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Dict, List
 from uuid import UUID
 from app.db.session import get_db
 from app.api.deps import require_permission
 from app.core.permissions import Permission
 from app.models.product import Product
 from app.models.user import User
+from app.services import inventory
+from app.core.cache import CacheInvalidator
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -16,11 +18,17 @@ class StockUpdate(BaseModel):
     quantity: int
 
 
+class SizeStockUpdate(BaseModel):
+    size_stock: Dict[str, int]
+
+
 class InventoryItem(BaseModel):
     id: UUID
     name: str
     sku: str | None
     stock_quantity: int
+    sizes: List[str] = []
+    size_stock: Dict[str, int] = {}
     low_stock_threshold: int
     is_low_stock: bool
     image: str | None
@@ -57,6 +65,8 @@ def list_inventory(
         name=p.name,
         sku=p.sku,
         stock_quantity=p.stock_quantity,
+        sizes=inventory.product_sizes(p),
+        size_stock=p.size_stock or {},
         low_stock_threshold=p.low_stock_threshold,
         is_low_stock=p.stock_quantity <= p.low_stock_threshold,
         image=p.images[0] if p.images else None
@@ -76,6 +86,8 @@ def update_stock(
 
     if stock_data.quantity < 0:
         raise HTTPException(status_code=400, detail="Stock quantity cannot be negative")
+    if inventory.tracks_sizes(product):
+        raise HTTPException(status_code=400, detail="This product tracks stock per size; set the sizes instead")
 
     product.stock_quantity = stock_data.quantity
     db.commit()
@@ -99,6 +111,9 @@ def add_stock(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    if inventory.tracks_sizes(product):
+        raise HTTPException(status_code=400, detail="This product tracks stock per size; set the sizes instead")
+
     product.stock_quantity += stock_data.quantity
     db.commit()
 
@@ -107,6 +122,33 @@ def add_stock(
         "name": product.name,
         "stock_quantity": product.stock_quantity,
         "message": f"Added {stock_data.quantity} units to stock"
+    }
+
+
+@router.put("/{product_id}/sizes")
+def update_size_stock(
+    product_id: UUID,
+    data: SizeStockUpdate,
+    current_user: User = Depends(require_permission(Permission.MANAGE_PRODUCTS)),
+    db: Session = Depends(get_db)
+):
+    """Set stock for every size; the product total becomes their sum."""
+    product = db.query(Product).filter(Product.id == product_id).with_for_update().first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    try:
+        inventory.set_size_stock(product, data.size_stock)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    CacheInvalidator.invalidate_product(str(product.id), product.slug)
+
+    return {
+        "id": str(product.id),
+        "name": product.name,
+        "size_stock": product.size_stock,
+        "stock_quantity": product.stock_quantity,
+        "message": "Size stock updated",
     }
 
 

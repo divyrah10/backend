@@ -56,6 +56,7 @@ class ProductResponse(BaseModel):
     compare_at_price: Optional[Decimal]
     sku: Optional[str]
     stock_quantity: int
+    size_stock: Dict[str, int] = {}
     category: Optional[CategoryResponse]
     images: List[str]
     attributes: Dict[str, Any]

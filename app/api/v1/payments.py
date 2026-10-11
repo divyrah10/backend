@@ -13,6 +13,7 @@ from app.core.cache import CacheInvalidator
 from app.models.payment import Payment
 from app.models.order import Order, OrderStatus
 from app.models.product import Product
+from app.services import inventory
 from app.models.user import User
 from app.schemas.payment import PaymentCreate, PaymentResponse, RazorpayOrderResponse, PaymentVerify
 from app.services.shiprocket import push_order_in_background
@@ -39,7 +40,7 @@ def restore_order_stock(order: Order, db: Session):
     for item in order.items:
         product = product_map.get(str(item.product_id))
         if product:
-            product.stock_quantity += item.quantity
+            inventory.adjust(product, inventory.item_size(item.attributes), item.quantity)
 
     order.stock_reserved = "restored"
 

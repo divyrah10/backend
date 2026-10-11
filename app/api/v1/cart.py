@@ -8,6 +8,7 @@ from app.core.pricing import included_gst
 from app.api.deps import get_current_user
 from app.models.cart import CartItem
 from app.models.product import Product
+from app.services import inventory
 from app.models.user import User
 from app.schemas.cart import CartItemCreate, CartItemUpdate, CartItemResponse, CartResponse
 
@@ -96,16 +97,16 @@ def add_to_cart(
     if not product.in_stock:
         raise HTTPException(status_code=400, detail="Product is out of stock")
 
-    if item_data.quantity > product.stock_quantity:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Only {product.stock_quantity} items available"
-        )
-
-    available_sizes = (product.attributes or {}).get("sizes", [])
-    selected_size = item_data.attributes.get("size")
+    available_sizes = inventory.product_sizes(product)
+    selected_size = inventory.item_size(item_data.attributes)
     if available_sizes and selected_size not in available_sizes:
         raise HTTPException(status_code=400, detail="Please select an available size")
+
+    stock = inventory.available(product, selected_size)
+    if stock <= 0:
+        raise HTTPException(status_code=400, detail=f"Size {selected_size} is sold out")
+    if item_data.quantity > stock:
+        raise HTTPException(status_code=400, detail=f"Only {stock} items available")
 
     # Check if item already in cart
     query = db.query(CartItem).filter(
@@ -124,10 +125,10 @@ def add_to_cart(
     if existing_item:
         # Update quantity
         new_quantity = existing_item.quantity + item_data.quantity
-        if new_quantity > product.stock_quantity:
+        if new_quantity > stock:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot add more. Only {product.stock_quantity} items available"
+                detail=f"Cannot add more. Only {stock} items available"
             )
         existing_item.quantity = new_quantity
     else:
@@ -167,10 +168,11 @@ def update_cart_item(
 
     # Check stock
     product = db.query(Product).filter(Product.id == cart_item.product_id).first()
-    if item_data.quantity > product.stock_quantity:
+    stock = inventory.available(product, inventory.item_size(cart_item.attributes))
+    if item_data.quantity > stock:
         raise HTTPException(
             status_code=400,
-            detail=f"Only {product.stock_quantity} items available"
+            detail=f"Only {stock} items available"
         )
 
     if item_data.quantity <= 0:
@@ -250,7 +252,8 @@ def merge_guest_cart(
         if existing:
             # Merge quantities
             product = db.query(Product).filter(Product.id == guest_item.product_id).first()
-            new_qty = min(existing.quantity + guest_item.quantity, product.stock_quantity)
+            new_qty = min(existing.quantity + guest_item.quantity,
+                          inventory.available(product, inventory.item_size(guest_item.attributes)))
             existing.quantity = new_qty
             db.delete(guest_item)
         else:

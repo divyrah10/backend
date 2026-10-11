@@ -30,6 +30,8 @@ class Product(Base, TimestampMixin):
     # Media and attributes
     images = Column(JSONB, default=list)  # List of image URLs
     attributes = Column(JSONB, default=dict)  # {size: [...], color: [...], material: "..."}
+    # Per-size stock, e.g. {"S": 4, "M": 7}. Empty means stock is tracked only in stock_quantity.
+    size_stock = Column(JSONB, default=dict, nullable=False, server_default="{}")
 
     # Status
     is_active = Column(Boolean, default=True)

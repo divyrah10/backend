@@ -13,6 +13,7 @@ from app.core.permissions import Permission
 from app.core.cache import CacheInvalidator
 from app.models.order import Order, OrderItem, OrderStatus, Shipment, TrackingEvent
 from app.models.product import Product
+from app.services import inventory
 from app.models.address import Address
 from app.models.cart import CartItem
 from app.models.user import User
@@ -342,11 +343,12 @@ def create_order(
     for item_data in order_data.items:
         product = product_map[str(item_data.product_id)]
 
-        # Check stock (row is locked, so this is accurate)
-        if product.stock_quantity < item_data.quantity:
-            stock_errors.append(
-                f"{product.name}: only {product.stock_quantity} available"
-            )
+        # Check stock (row is locked, so this is accurate); per size when tracked
+        size = inventory.item_size(item_data.attributes)
+        stock = inventory.available(product, size)
+        if stock < item_data.quantity:
+            label = f"{product.name} ({size})" if size and inventory.tracks_sizes(product) else product.name
+            stock_errors.append(f"{label}: only {stock} available")
             continue
 
         item_subtotal = product.price * item_data.quantity
@@ -363,7 +365,7 @@ def create_order(
         ))
 
         # Reserve stock (will be confirmed after payment or restored on failure)
-        product.stock_quantity -= item_data.quantity
+        inventory.adjust(product, size, -item_data.quantity)
 
     # If any stock errors, rollback and report
     if stock_errors:
@@ -475,7 +477,7 @@ def cancel_order(
         for item in order.items:
             product = product_map.get(str(item.product_id))
             if product:
-                product.stock_quantity += item.quantity
+                inventory.adjust(product, inventory.item_size(item.attributes), item.quantity)
 
         order.stock_reserved = "restored"  # Mark as restored to prevent double-restore
 
@@ -527,7 +529,7 @@ def update_order_status(
         for item in order.items:
             product = product_map.get(str(item.product_id))
             if product:
-                product.stock_quantity += item.quantity
+                inventory.adjust(product, inventory.item_size(item.attributes), item.quantity)
                 CacheInvalidator.invalidate_product(str(product.id), product.slug)
         order.stock_reserved = "restored"
 
