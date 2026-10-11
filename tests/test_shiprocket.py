@@ -152,6 +152,20 @@ class ClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ShiprocketError, "Invalid pincode"):
             self.client(handler).create_order({})
 
+    def test_validation_errors_name_each_field(self):
+        def handler(request):
+            if request.url.path == "/auth/login":
+                return httpx.Response(200, json={"token": "t"})
+            return httpx.Response(422, json={"message": "The given data was invalid.", "errors": {
+                "billing_phone": ["The billing phone must be 10 digits."],
+                "billing_pincode": ["Invalid pincode"]}})
+
+        with self.assertLogs("app.services.shiprocket", level="WARNING") as logs, \
+                self.assertRaisesRegex(ShiprocketError, "billing_phone: The billing phone must be 10 digits") as raised:
+            self.client(handler).create_order({})
+        self.assertIn("billing_pincode: Invalid pincode", str(raised.exception))
+        self.assertIn("billing_phone", logs.output[0])
+
     def test_awb_not_assigned_raises(self):
         def handler(request):
             if request.url.path == "/auth/login":

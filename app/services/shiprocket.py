@@ -67,6 +67,23 @@ class ShiprocketError(Exception):
     pass
 
 
+def describe_error(body: Any) -> str:
+    """Shiprocket's reason, field by field. 422s put the useful part in "errors":
+    {"message": "The given data was invalid.", "errors": {"billing_phone": ["..."]}}.
+    """
+    if not isinstance(body, dict):
+        return ""
+    parts = [str(body["message"])] if body.get("message") else []
+    errors = body.get("errors")
+    if isinstance(errors, dict):
+        for field, problems in errors.items():
+            text = "; ".join(map(str, problems)) if isinstance(problems, list) else str(problems)
+            parts.append(f"{field}: {text}")
+    elif errors:
+        parts.append(str(errors))
+    return " | ".join(parts)[:500]
+
+
 def map_status(label: Optional[str]) -> Optional[str]:
     """Translate a Shiprocket status label into one of our shipment statuses."""
     if not label:
@@ -179,7 +196,8 @@ class ShiprocketClient:
         except ValueError:
             body = {}
         if response.status_code >= 400:
-            message = body.get("message") or body.get("errors") or response.text[:300]
+            message = describe_error(body) or response.text[:300]
+            logger.warning("Shiprocket %s failed (%s): %s", path, response.status_code, message)
             raise ShiprocketError(f"Shiprocket {path} failed ({response.status_code}): {message}")
         return body
 
