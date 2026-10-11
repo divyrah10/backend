@@ -30,6 +30,13 @@ from app.schemas.order import (
 router = APIRouter()
 
 SHIPPING_COST = Decimal("0")  # Free shipping
+# Orders a customer has paid for; tracking links only work for these.
+PAID_ORDER_STATUSES = {
+    OrderStatus.CONFIRMED.value,
+    OrderStatus.PROCESSING.value,
+    OrderStatus.SHIPPED.value,
+    OrderStatus.DELIVERED.value,
+}
 SHIPMENT_STATUSES = {
     "order_confirmed",
     "processing",
@@ -139,7 +146,8 @@ def get_public_tracking(tracking_token: str, db: Session = Depends(get_db)):
     shipment = db.query(Shipment).options(
         joinedload(Shipment.events), joinedload(Shipment.order).joinedload(Order.items)
     ).filter(Shipment.tracking_token == tracking_token).first()
-    if not shipment:
+    # Unpaid orders get the same 404, so the link reveals nothing until payment clears.
+    if not shipment or shipment.order.status not in PAID_ORDER_STATUSES:
         raise HTTPException(status_code=404, detail="Tracking link not found")
 
     order = shipment.order

@@ -5,6 +5,7 @@ import razorpay
 import hmac
 import hashlib
 import json
+import logging
 from app.db.session import get_db
 from app.api.deps import get_current_active_user
 from app.core.config import settings
@@ -15,6 +16,8 @@ from app.models.product import Product
 from app.models.user import User
 from app.schemas.payment import PaymentCreate, PaymentResponse, RazorpayOrderResponse, PaymentVerify
 from app.services.shiprocket import push_order_in_background
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -110,6 +113,7 @@ def create_payment_order(
             }
         })
     except Exception as e:
+        logger.error("Razorpay order.create failed for order %s: %s", order.order_number, e)
         raise HTTPException(status_code=500, detail=f"Payment gateway error: {str(e)}")
 
     # Create payment record
@@ -148,10 +152,15 @@ def verify_payment(
     ).first()
 
     if not payment:
+        logger.warning("verify: no payment record for razorpay order %s", verification_data.razorpay_order_id)
         raise HTTPException(status_code=404, detail="Payment not found")
 
     order = order_for_payment(db, payment)
-    if not order or order.user_id != current_user.id:
+    if not order:
+        logger.error("verify: no order linked to payment %s (razorpay order %s)", payment.id, payment.razorpay_order_id)
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if order.user_id != current_user.id:
+        logger.warning("verify: user %s tried to verify order %s owned by another user", current_user.id, order.order_number)
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # Verify signature
@@ -163,6 +172,8 @@ def verify_payment(
     ).hexdigest()
 
     if not hmac.compare_digest(expected_signature, verification_data.razorpay_signature):
+        logger.error("verify: signature mismatch for order %s (razorpay payment %s); check RAZORPAY_KEY_SECRET",
+                     order.order_number, verification_data.razorpay_payment_id)
         payment.status = "failed"
         payment.error_description = "Invalid signature"
         db.commit()
@@ -187,6 +198,7 @@ def verify_payment(
     db.commit()
     db.refresh(payment)
 
+    logger.info("verify: order %s paid (razorpay payment %s)", order.order_number, verification_data.razorpay_payment_id)
     if newly_confirmed:
         background_tasks.add_task(push_order_in_background, order.id)
 
@@ -226,6 +238,7 @@ async def razorpay_webhook(
     2. Payment failure: Restore stock so others can buy
     """
     if not settings.RAZORPAY_WEBHOOK_SECRET:
+        logger.warning("webhook: received but RAZORPAY_WEBHOOK_SECRET is not set")
         raise HTTPException(status_code=503, detail="Payment webhook is not configured")
 
     raw_payload = await request.body()
@@ -233,6 +246,7 @@ async def razorpay_webhook(
         settings.RAZORPAY_WEBHOOK_SECRET.encode(), raw_payload, hashlib.sha256
     ).hexdigest()
     if not hmac.compare_digest(expected_signature, x_razorpay_signature):
+        logger.error("webhook: invalid signature; RAZORPAY_WEBHOOK_SECRET must match the secret set in Razorpay")
         raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
     try:
