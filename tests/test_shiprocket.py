@@ -82,6 +82,19 @@ class MappingTests(unittest.TestCase):
         self.assertIsNone(parse_timestamp("not a date"))
 
 
+class AddressPhoneTests(unittest.TestCase):
+    def test_phone_is_required_and_normalised(self):
+        from pydantic import ValidationError
+        from app.schemas.address import AddressCreate
+
+        base = dict(full_name="A", address_line1="1 St", city="Dharwad", state="Karnataka", postal_code="580001")
+        self.assertEqual(AddressCreate(**base, phone="+91 98765-43210").phone, "9876543210")
+        self.assertEqual(AddressCreate(**base, phone="09876543210").phone, "9876543210")
+        for bad in (None, "", "12345", "98765432101"):
+            with self.assertRaises(ValidationError, msg=bad):
+                AddressCreate(**base, phone=bad)
+
+
 class PayloadTests(unittest.TestCase):
     def test_payload_shape(self):
         payload = build_order_payload(make_order())
@@ -99,6 +112,16 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(item["sku"], "LON-TEE-BLK-M")
         self.assertEqual(item["units"], 2)
         self.assertEqual(item["tax"], 5.0)
+
+    def test_uses_razorpay_contact_when_order_has_no_phone(self):
+        order = make_order()
+        order.shipping_address["phone"] = None
+        self.assertEqual(build_order_payload(order)["billing_phone"], "")
+        self.assertEqual(build_order_payload(order, fallback_phone="+91 9741 529588")["billing_phone"], "9741529588")
+
+    def test_address_phone_wins_over_fallback(self):
+        payload = build_order_payload(make_order(), fallback_phone="+91 9999999999")
+        self.assertEqual(payload["billing_phone"], "8217409487")
 
     def test_falls_back_to_product_id_when_no_sku(self):
         order = make_order()

@@ -113,7 +113,7 @@ def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
     return None
 
 
-def build_order_payload(order: Order) -> dict[str, Any]:
+def build_order_payload(order: Order, fallback_phone: Optional[str] = None) -> dict[str, Any]:
     """Shape an order as Shiprocket's /orders/create/adhoc body. Prices are GST-inclusive."""
     address = order.shipping_address or {}
     full_name = (address.get("full_name") or order.user.full_name or "").strip()
@@ -146,7 +146,7 @@ def build_order_payload(order: Order) -> dict[str, Any]:
         "billing_state": address.get("state", ""),
         "billing_country": address.get("country") or "India",
         "billing_email": order.user.email,
-        "billing_phone": normalize_phone(address.get("phone") or order.user.phone),
+        "billing_phone": normalize_phone(address.get("phone") or order.user.phone or fallback_phone),
         "shipping_is_billing": True,
         "order_items": items,
         "payment_method": "Prepaid",
@@ -266,6 +266,23 @@ def load_order(db: Session, order_id) -> Optional[Order]:
     ).filter(Order.id == order_id).first()
 
 
+def payment_contact(order: Order) -> Optional[str]:
+    """The phone the customer gave Razorpay at payment, for orders whose address has none."""
+    address_phone = (order.shipping_address or {}).get("phone")
+    if normalize_phone(address_phone or order.user.phone):
+        return None
+    payment = order.payment
+    if not payment or not payment.razorpay_payment_id:
+        return None
+    from app.api.v1.payments import razorpay_client
+
+    try:
+        return razorpay_client.payment.fetch(payment.razorpay_payment_id).get("contact")
+    except Exception:
+        logger.warning("Could not fetch Razorpay contact for order %s", order.order_number)
+        return None
+
+
 def push_order(db: Session, order: Order, client: Optional[ShiprocketClient] = None) -> Shipment:
     """Create the order in Shiprocket (once) and store what comes back. Commits on success."""
     from app.api.v1.orders import get_or_create_shipment
@@ -280,7 +297,7 @@ def push_order(db: Session, order: Order, client: Optional[ShiprocketClient] = N
     if not shipment.provider_shipment_id:
         if order.status not in {OrderStatus.CONFIRMED.value, OrderStatus.PROCESSING.value}:
             raise ShiprocketError(f"Order is {order.status}; only paid orders can be shipped")
-        created = client.create_order(build_order_payload(order))
+        created = client.create_order(build_order_payload(order, fallback_phone=payment_contact(order)))
         if not created.get("shipment_id"):
             raise ShiprocketError(f"Shiprocket did not return a shipment: {created.get('message') or created}")
         shipment.provider_shipment_id = str(created["shipment_id"])
