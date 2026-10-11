@@ -7,6 +7,7 @@ from decimal import Decimal
 from slugify import slugify
 import cloudinary
 import cloudinary.uploader
+import logging
 from app.db.session import get_db
 from app.api.deps import get_current_active_user, require_permission
 from app.core.config import settings
@@ -17,6 +18,9 @@ from app.models.category import Category
 from app.models.review import Review
 from app.models.user import User
 from app.schemas.product import ProductCreate, ProductUpdate, ProductResponse, ProductListResponse
+from app.services import inventory
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -292,8 +296,22 @@ def update_product(
             counter += 1
         update_data["slug"] = slug
 
+    if inventory.tracks_sizes(product):
+        # Stock lives per size (set in Inventory); a total from the edit form would break the sum.
+        update_data.pop("stock_quantity", None)
+
     for field, value in update_data.items():
         setattr(product, field, value)
+
+    if inventory.tracks_sizes(product) and "attributes" in update_data:
+        # Sizes edited: keep counts for sizes that remain, start new ones at 0.
+        old = product.size_stock or {}
+        sizes = inventory.product_sizes(product)
+        if sizes:
+            product.size_stock = {size: int(old.get(size, 0)) for size in sizes}
+        else:
+            product.size_stock = {}
+        product.stock_quantity = sum(product.size_stock.values()) if product.size_stock else product.stock_quantity
 
     db.commit()
     db.refresh(product)
@@ -337,6 +355,16 @@ async def upload_product_image(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    if not (settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET):
+        logger.error("Image upload refused: Cloudinary credentials are not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Image uploads aren't set up yet: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and "
+                   "CLOUDINARY_API_SECRET must be set on the server.",
+        )
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files can be uploaded")
+
     # Upload to Cloudinary
     try:
         result = cloudinary.uploader.upload(
@@ -354,12 +382,11 @@ async def upload_product_image(
         )
         image_url = result["secure_url"].replace("/upload/", "/upload/f_auto,q_auto/")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Image upload failed: {str(e)}")
+        logger.exception("Cloudinary upload failed for product %s", product.slug)
+        raise HTTPException(status_code=502, detail=f"Image upload failed: {str(e)}")
 
-    # Add to product images
-    images = product.images or []
-    images.append(image_url)
-    product.images = images
+    # New list, not an in-place append: JSONB columns only save when reassigned.
+    product.images = [*(product.images or []), image_url]
 
     db.commit()
     db.refresh(product)
