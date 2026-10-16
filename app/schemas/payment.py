@@ -21,6 +21,10 @@ class PaymentVerify(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
+    # Meta browser identifiers (_fbp/_fbc cookies) and page, for Conversions API matching.
+    fbp: Optional[str] = None
+    fbc: Optional[str] = None
+    event_source_url: Optional[str] = None
 
 
 class PaymentResponse(BaseModel):

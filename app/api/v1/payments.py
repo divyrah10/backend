@@ -16,6 +16,7 @@ from app.models.product import Product
 from app.services import inventory
 from app.models.user import User
 from app.schemas.payment import PaymentCreate, PaymentResponse, RazorpayOrderResponse, PaymentVerify
+from app.services.meta import send_purchase_in_background
 from app.services.shiprocket import push_order_in_background
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,13 @@ def restore_order_stock(order: Order, db: Session):
         product = product_map.get(str(product_id))
         if product:
             CacheInvalidator.invalidate_product(str(product_id), product.slug)
+
+def client_ip(request: Request):
+    """The shopper's IP, taking the first hop when we sit behind a proxy."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else None
 
 # Initialize Razorpay client
 razorpay_client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
@@ -143,6 +151,7 @@ def create_payment_order(
 @router.post("/verify", response_model=PaymentResponse)
 def verify_payment(
     verification_data: PaymentVerify,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
@@ -202,6 +211,14 @@ def verify_payment(
     logger.info("verify: order %s paid (razorpay payment %s)", order.order_number, verification_data.razorpay_payment_id)
     if newly_confirmed:
         background_tasks.add_task(push_order_in_background, order.id)
+        background_tasks.add_task(
+            send_purchase_in_background, order.id,
+            client_ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            fbp=verification_data.fbp,
+            fbc=verification_data.fbc,
+            event_source_url=verification_data.event_source_url,
+        )
 
     return payment
 
@@ -280,6 +297,8 @@ async def razorpay_webhook(
 
             if newly_confirmed:
                 background_tasks.add_task(push_order_in_background, order.id)
+                # No browser context here; Meta still matches on the hashed customer details.
+                background_tasks.add_task(send_purchase_in_background, order.id)
 
     elif event == "payment.failed":
         payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-from app.api.v1 import auth, users, products, categories, cart, wishlist, reviews, orders, payments, compare, addresses, early_access, logistics
-from app.api.v1.admin import dashboard, inventory, setup
+from app.api.v1 import auth, users, products, categories, cart, wishlist, reviews, orders, payments, compare, addresses, early_access, logistics, meta
+from app.api.v1.admin import dashboard, inventory, meta_ads, setup
 
 api_router = APIRouter()
 
@@ -18,8 +18,10 @@ api_router.include_router(payments.router, prefix="/payments", tags=["Payments"]
 api_router.include_router(addresses.router, prefix="/addresses", tags=["Addresses"])
 api_router.include_router(early_access.router, prefix="/early-access", tags=["Early Access"])
 api_router.include_router(logistics.router, prefix="/logistics", tags=["Logistics"])
+api_router.include_router(meta.router, prefix="/meta", tags=["Meta Ads"])
 
 # Admin routes
 api_router.include_router(setup.router, prefix="/admin", tags=["Admin - Setup & Auth"])
 api_router.include_router(dashboard.router, prefix="/admin/dashboard", tags=["Admin - Dashboard"])
 api_router.include_router(inventory.router, prefix="/admin/inventory", tags=["Admin - Inventory"])
+api_router.include_router(meta_ads.router, prefix="/admin/meta", tags=["Admin - Meta Ads"])

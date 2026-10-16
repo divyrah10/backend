@@ -19,6 +19,7 @@ class CartItemResponse(BaseModel):
     product_id: UUID
     product_name: str
     product_slug: str
+    product_sku: Optional[str] = None
     product_image: Optional[str]
     product_price: Decimal
     quantity: int
